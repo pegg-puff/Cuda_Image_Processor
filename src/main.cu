@@ -30,7 +30,9 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
         int Gx[3][3] = {{-1,0,1},{-2,0,2},{-1,0,1}};
         int Gy[3][3] = {{1,2,1},{0,0,0},{-1,-2,-1}};
 
-        int sumX = 0, sumY = 0;
+        float sumX = 0;
+        float sumY = 0;
+
         for(int i=-1;i<=1;i++){
             for(int j=-1;j<=1;j++){
                 int pixel = input[(y+i)*width + (x+j)];
@@ -38,8 +40,14 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
                 sumY += Gy[i+1][j+1] * pixel;
             }
         }
-        int val = sqrtf(sumX*sumX + sumY*sumY);
-        val = min(255, val * 5);   // increase from 2 → 5 for very faint edges
+
+        // Compute gradient magnitude
+        float val = sqrtf(sumX*sumX + sumY*sumY);
+
+        // Normalize to 0-255 for visibility
+        val = val / 8.0f; // divide by max possible gradient (for 8-bit image)
+        if (val > 255.0f) val = 255.0f;
+
         output[y*width + x] = (unsigned char)val;
     }
 }
@@ -50,8 +58,14 @@ int main() {
     std::string output_folder = "output/";
     int quant_levels = 8;
 
+    // Create output folder if not exists
+    cv::utils::fs::createDirectory(output_folder);
+
     for (const auto & entry : fs::directory_iterator(input_folder)) {
         std::string path = entry.path().string();
+        // Skip hidden files like .DS_Store
+        if(entry.path().filename().string()[0] == '.') continue;
+
         cv::Mat input = cv::imread(path);
         if (input.empty()) {
             std::cout << "Failed to load " << path << std::endl;
@@ -79,32 +93,33 @@ int main() {
         dim3 block(16,16);
         dim3 grid((width + block.x - 1)/block.x, (height + block.y - 1)/block.y);
         colorQuantizationKernel<<<grid, block>>>(d_input, d_quant, width, height, channels, quant_levels);
-        cudaDeviceSynchronize();  // Wait for kernel to finish
+        cudaDeviceSynchronize();
 
-        // Copy quantized image back to host
+        // Copy quantized image back
         cudaMemcpy(quant_output.data, d_quant, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
-        // Convert to grayscale for Sobel
+        // Convert to grayscale
         cv::cvtColor(quant_output, gray, cv::COLOR_BGR2GRAY);
         cudaMemcpy(d_edge, gray.data, width * height * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
         // Launch Sobel kernel
         sobelKernel<<<grid, block>>>(d_edge, d_edge, width, height);
-        cudaDeviceSynchronize();  // Wait for kernel to finish
+        cudaDeviceSynchronize();
 
         // Copy edge image back to host
         cudaMemcpy(edge_output.data, d_edge, width * height * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
-        // Save output image
+        // Save output
         std::string filename = output_folder + entry.path().filename().string();
         cv::imwrite(filename, edge_output);
 
-        // Free device memory
+        // Free memory
         cudaFree(d_input);
         cudaFree(d_quant);
         cudaFree(d_edge);
 
         std::cout << "Processed " << path << std::endl;
     }
+
     return 0;
 }
