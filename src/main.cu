@@ -27,28 +27,23 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
-        int Gx[3][3] = {{-1,0,1},{-2,0,2},{-1,0,1}};
-        int Gy[3][3] = {{1,2,1},{0,0,0},{-1,-2,-1}};
+        int Gx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
+        int Gy[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
 
         float sumX = 0;
         float sumY = 0;
 
-        for(int i=-1;i<=1;i++){
-            for(int j=-1;j<=1;j++){
-                int pixel = input[(y+i)*width + (x+j)];
-                sumX += Gx[i+1][j+1] * pixel;
-                sumY += Gy[i+1][j+1] * pixel;
+        for (int i = -1; i <= 1; i++) {
+            for (int j = -1; j <= 1; j++) {
+                int pixel = input[(y + i) * width + (x + j)];
+                sumX += Gx[i + 1][j + 1] * pixel;
+                sumY += Gy[i + 1][j + 1] * pixel;
             }
         }
 
-        // Compute gradient magnitude
-        float val = sqrtf(sumX*sumX + sumY*sumY);
-
-        // Normalize to 0-255 for visibility
-        val = val / 8.0f; // divide by max possible gradient (for 8-bit image)
-        if (val > 255.0f) val = 255.0f;
-
-        output[y*width + x] = (unsigned char)val;
+        float val = sqrtf(sumX * sumX + sumY * sumY);
+        val = min(255.0f, val); // Cap the value at 255
+        output[y * width + x] = (unsigned char)val;
     }
 }
 
