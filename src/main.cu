@@ -39,7 +39,7 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
             }
         }
         int val = sqrtf(sumX*sumX + sumY*sumY);
-        val = min(255, val * 2);   // scale for visibility
+        val = min(255, val * 5);   // increase from 2 → 5 for very faint edges
         output[y*width + x] = (unsigned char)val;
     }
 }
