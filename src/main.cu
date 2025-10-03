@@ -3,6 +3,13 @@
 #include <filesystem>
 #include <cmath>
 
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
 namespace fs = std::filesystem;
 
 // ---------------- CUDA KERNELS ----------------
@@ -27,23 +34,28 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
-        int Gx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
-        int Gy[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
+        int Gx[3][3] = {{-1,0,1},{-2,0,2},{-1,0,1}};
+        int Gy[3][3] = {{1,2,1},{0,0,0},{-1,-2,-1}};
 
         float sumX = 0;
         float sumY = 0;
 
-        for (int i = -1; i <= 1; i++) {
-            for (int j = -1; j <= 1; j++) {
-                int pixel = input[(y + i) * width + (x + j)];
-                sumX += Gx[i + 1][j + 1] * pixel;
-                sumY += Gy[i + 1][j + 1] * pixel;
+        for(int i=-1;i<=1;i++){
+            for(int j=-1;j<=1;j++){
+                int pixel = input[(y+i)*width + (x+j)];
+                sumX += Gx[i+1][j+1] * pixel;
+                sumY += Gy[i+1][j+1] * pixel;
             }
         }
 
-        float val = sqrtf(sumX * sumX + sumY * sumY);
-        val = min(255.0f, val); // Cap the value at 255
-        output[y * width + x] = (unsigned char)val;
+        // Gradient magnitude
+        float val = sqrtf(sumX*sumX + sumY*sumY);
+
+        // Normalize to 0-255 for visibility
+        val = val / 8.0f;  // approximate max gradient
+        if (val > 255.0f) val = 255.0f;
+
+        output[y*width + x] = (unsigned char)val;
     }
 }
 
@@ -53,11 +65,15 @@ int main() {
     std::string output_folder = "output/";
     int quant_levels = 8;
 
-    // Create output folder if not exists
-    struct stat info;
-    if (stat(output_folder.c_str(), &info) != 0) {
-    mkdir(output_folder.c_str(), 0777);
+    // Create output folder if it doesn't exist
+#ifdef _WIN32
+    _mkdir(output_folder.c_str());
+#else
+    struct stat st;
+    if (stat(output_folder.c_str(), &st) != 0) {
+        mkdir(output_folder.c_str(), 0777);
     }
+#endif
 
     for (const auto & entry : fs::directory_iterator(input_folder)) {
         std::string path = entry.path().string();
