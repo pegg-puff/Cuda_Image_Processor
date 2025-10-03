@@ -38,7 +38,8 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
                 sumY += Gy[i+1][j+1] * pixel;
             }
         }
-        int val = min(255, int(sqrtf(sumX*sumX + sumY*sumY)));
+        int val = sqrtf(sumX*sumX + sumY*sumY);
+        val = min(255, val * 2);   // scale for visibility
         output[y*width + x] = (unsigned char)val;
     }
 }
@@ -76,7 +77,7 @@ int main() {
 
         // Launch color quantization kernel
         dim3 block(16,16);
-        dim3 grid((width+15)/16, (height+15)/16);
+        dim3 grid((width + block.x - 1)/block.x, (height + block.y - 1)/block.y);
         colorQuantizationKernel<<<grid, block>>>(d_input, d_quant, width, height, channels, quant_levels);
         cudaDeviceSynchronize();  // Wait for kernel to finish
 
