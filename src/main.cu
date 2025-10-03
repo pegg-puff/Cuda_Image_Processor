@@ -1,12 +1,11 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
-#include <vector>
 #include <filesystem>
 #include <cmath>
 
 namespace fs = std::filesystem;
 
-// ---------- CUDA KERNELS ----------
+// ---------------- CUDA KERNELS ----------------
 
 // Color Quantization Kernel
 __global__ void colorQuantizationKernel(unsigned char* input, unsigned char* output, int width, int height, int channels, int levels) {
@@ -22,7 +21,7 @@ __global__ void colorQuantizationKernel(unsigned char* input, unsigned char* out
     }
 }
 
-// Sobel Edge Detection Kernel
+// Sobel Edge Detection Kernel (grayscale input)
 __global__ void sobelKernel(unsigned char* input, unsigned char* output, int width, int height) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -34,17 +33,17 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
         int sumX = 0, sumY = 0;
         for(int i=-1;i<=1;i++){
             for(int j=-1;j<=1;j++){
-                int pixel = input[((y+i)*width + (x+j))];
-                sumX += Gx[i+1][j+1]*pixel;
-                sumY += Gy[i+1][j+1]*pixel;
+                int pixel = input[(y+i)*width + (x+j)];
+                sumX += Gx[i+1][j+1] * pixel;
+                sumY += Gy[i+1][j+1] * pixel;
             }
         }
         int val = min(255, int(sqrtf(sumX*sumX + sumY*sumY)));
-        output[y*width + x] = val;
+        output[y*width + x] = (unsigned char)val;
     }
 }
 
-// ---------- MAIN PROGRAM ----------
+// ---------------- MAIN PROGRAM ----------------
 int main() {
     std::string input_folder = "data/";
     std::string output_folder = "output/";
@@ -53,7 +52,10 @@ int main() {
     for (const auto & entry : fs::directory_iterator(input_folder)) {
         std::string path = entry.path().string();
         cv::Mat input = cv::imread(path);
-        if (input.empty()) continue;
+        if (input.empty()) {
+            std::cout << "Failed to load " << path << std::endl;
+            continue;
+        }
 
         int width = input.cols;
         int height = input.rows;
@@ -63,32 +65,44 @@ int main() {
         cv::Mat gray(height, width, CV_8UC1);
         cv::Mat edge_output(height, width, CV_8UC1);
 
+        // Allocate CUDA memory
         unsigned char *d_input, *d_quant, *d_edge;
-        cudaMalloc(&d_input, width*height*channels);
-        cudaMalloc(&d_quant, width*height*channels);
-        cudaMalloc(&d_edge, width*height);
+        cudaMalloc(&d_input, width * height * channels * sizeof(unsigned char));
+        cudaMalloc(&d_quant, width * height * channels * sizeof(unsigned char));
+        cudaMalloc(&d_edge, width * height * sizeof(unsigned char));
 
-        cudaMemcpy(d_input, input.data, width*height*channels, cudaMemcpyHostToDevice);
+        // Copy image to device
+        cudaMemcpy(d_input, input.data, width * height * channels * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
+        // Launch color quantization kernel
         dim3 block(16,16);
         dim3 grid((width+15)/16, (height+15)/16);
-
-        // Color Quantization
         colorQuantizationKernel<<<grid, block>>>(d_input, d_quant, width, height, channels, quant_levels);
-        cudaMemcpy(quant_output.data, d_quant, width*height*channels, cudaMemcpyDeviceToHost);
+        cudaDeviceSynchronize();  // Wait for kernel to finish
+
+        // Copy quantized image back to host
+        cudaMemcpy(quant_output.data, d_quant, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
         // Convert to grayscale for Sobel
         cv::cvtColor(quant_output, gray, cv::COLOR_BGR2GRAY);
-        cudaMemcpy(d_edge, gray.data, width*height, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_edge, gray.data, width * height * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
-        // Sobel Edge Detection
+        // Launch Sobel kernel
         sobelKernel<<<grid, block>>>(d_edge, d_edge, width, height);
-        cudaMemcpy(edge_output.data, d_edge, width*height, cudaMemcpyDeviceToHost);
+        cudaDeviceSynchronize();  // Wait for kernel to finish
 
+        // Copy edge image back to host
+        cudaMemcpy(edge_output.data, d_edge, width * height * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+        // Save output image
         std::string filename = output_folder + entry.path().filename().string();
         cv::imwrite(filename, edge_output);
 
-        cudaFree(d_input); cudaFree(d_quant); cudaFree(d_edge);
+        // Free device memory
+        cudaFree(d_input);
+        cudaFree(d_quant);
+        cudaFree(d_edge);
+
         std::cout << "Processed " << path << std::endl;
     }
     return 0;
