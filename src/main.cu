@@ -54,7 +54,10 @@ int main() {
     int quant_levels = 8;
 
     // Create output folder if not exists
-    cv::utils::fs::createDirectory(output_folder);
+    struct stat info;
+    if (stat(output_folder.c_str(), &info) != 0) {
+    mkdir(output_folder.c_str(), 0777);
+    }
 
     for (const auto & entry : fs::directory_iterator(input_folder)) {
         std::string path = entry.path().string();
