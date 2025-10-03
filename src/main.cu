@@ -1,0 +1,95 @@
+#include <opencv2/opencv.hpp>
+#include <iostream>
+#include <vector>
+#include <filesystem>
+#include <cmath>
+
+namespace fs = std::filesystem;
+
+// ---------- CUDA KERNELS ----------
+
+// Color Quantization Kernel
+__global__ void colorQuantizationKernel(unsigned char* input, unsigned char* output, int width, int height, int channels, int levels) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < width && y < height) {
+        int idx = (y * width + x) * channels;
+        for (int c = 0; c < channels; c++) {
+            float scale = 255.0f / (levels - 1);
+            output[idx + c] = roundf(input[idx + c] / scale) * scale;
+        }
+    }
+}
+
+// Sobel Edge Detection Kernel
+__global__ void sobelKernel(unsigned char* input, unsigned char* output, int width, int height) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
+        int Gx[3][3] = {{-1,0,1},{-2,0,2},{-1,0,1}};
+        int Gy[3][3] = {{1,2,1},{0,0,0},{-1,-2,-1}};
+
+        int sumX = 0, sumY = 0;
+        for(int i=-1;i<=1;i++){
+            for(int j=-1;j<=1;j++){
+                int pixel = input[((y+i)*width + (x+j))];
+                sumX += Gx[i+1][j+1]*pixel;
+                sumY += Gy[i+1][j+1]*pixel;
+            }
+        }
+        int val = min(255, int(sqrtf(sumX*sumX + sumY*sumY)));
+        output[y*width + x] = val;
+    }
+}
+
+// ---------- MAIN PROGRAM ----------
+int main() {
+    std::string input_folder = "data/";
+    std::string output_folder = "output/";
+    int quant_levels = 8;
+
+    for (const auto & entry : fs::directory_iterator(input_folder)) {
+        std::string path = entry.path().string();
+        cv::Mat input = cv::imread(path);
+        if (input.empty()) continue;
+
+        int width = input.cols;
+        int height = input.rows;
+        int channels = input.channels();
+
+        cv::Mat quant_output(height, width, input.type());
+        cv::Mat gray(height, width, CV_8UC1);
+        cv::Mat edge_output(height, width, CV_8UC1);
+
+        unsigned char *d_input, *d_quant, *d_edge;
+        cudaMalloc(&d_input, width*height*channels);
+        cudaMalloc(&d_quant, width*height*channels);
+        cudaMalloc(&d_edge, width*height);
+
+        cudaMemcpy(d_input, input.data, width*height*channels, cudaMemcpyHostToDevice);
+
+        dim3 block(16,16);
+        dim3 grid((width+15)/16, (height+15)/16);
+
+        // Color Quantization
+        colorQuantizationKernel<<<grid, block>>>(d_input, d_quant, width, height, channels, quant_levels);
+        cudaMemcpy(quant_output.data, d_quant, width*height*channels, cudaMemcpyDeviceToHost);
+
+        // Convert to grayscale for Sobel
+        cv::cvtColor(quant_output, gray, cv::COLOR_BGR2GRAY);
+        cudaMemcpy(d_edge, gray.data, width*height, cudaMemcpyHostToDevice);
+
+        // Sobel Edge Detection
+        sobelKernel<<<grid, block>>>(d_edge, d_edge, width, height);
+        cudaMemcpy(edge_output.data, d_edge, width*height, cudaMemcpyDeviceToHost);
+
+        std::string filename = output_folder + entry.path().filename().string();
+        cv::imwrite(filename, edge_output);
+
+        cudaFree(d_input); cudaFree(d_quant); cudaFree(d_edge);
+        std::cout << "Processed " << path << std::endl;
+    }
+    return 0;
+}
